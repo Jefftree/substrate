@@ -189,6 +189,7 @@ func (s *RouterServer) Run(ctx context.Context) error {
 	xdsSrv.SetConfig(s.cfg.HttpPort, s.cfg.ExtprocPort, s.cfg.ExtprocAddr)
 	setOtlpCollector(ctx, xdsSrv, s.cfg.OtlpCollectorAddress)
 
+	xdsSrv.SetRouteTimeout(s.cfg.RouteTimeout)
 	xdsSrv.SetExtProcMaxRequests(s.cfg.extProcMaxRequests())
 	if parkCfg.enabled() {
 		// Envoy must keep a parked request open at least as long as the router
