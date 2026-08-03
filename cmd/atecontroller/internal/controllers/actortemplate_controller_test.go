@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
@@ -30,6 +31,34 @@ import (
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 )
+
+// The configured warmup applies only to templates that are not fully probed. A
+// template with readyz on every container skips the wait no matter how high the
+// operator set --golden-snapshot-warmup — the probe already proved the workload
+// is up, so waiting again would just delay every template rollout.
+func TestGoldenSnapshotWarmupForIgnoresConfigWhenReadyzPresent(t *testing.T) {
+	r := &ActorTemplateReconciler{GoldenSnapshotWarmup: 5 * time.Minute}
+	at := &atev1alpha1.ActorTemplate{
+		Spec: atev1alpha1.ActorTemplateSpec{Containers: []atev1alpha1.Container{
+			{Name: "a", Readyz: &atev1alpha1.ContainerReadyz{HTTPGet: &atev1alpha1.HTTPGetAction{Port: 80}}},
+		}},
+	}
+	if got := r.goldenSnapshotWarmupFor(at); got != 0 {
+		t.Errorf("goldenSnapshotWarmupFor = %v, want 0", got)
+	}
+}
+
+// A zero warmup is a real setting, not "unset": it means checkpoint as soon as
+// the golden actor resumes. It must not silently fall back to the default.
+func TestGoldenSnapshotWarmupForHonorsZero(t *testing.T) {
+	r := &ActorTemplateReconciler{GoldenSnapshotWarmup: 0}
+	at := &atev1alpha1.ActorTemplate{
+		Spec: atev1alpha1.ActorTemplateSpec{Containers: []atev1alpha1.Container{{Name: "a"}}},
+	}
+	if got := r.goldenSnapshotWarmupFor(at); got != 0 {
+		t.Errorf("goldenSnapshotWarmupFor with a zero warmup = %v, want 0", got)
+	}
+}
 
 func TestGoldenSnapshotWarmupFor(t *testing.T) {
 	probe := &atev1alpha1.ContainerReadyz{
@@ -78,17 +107,22 @@ func TestGoldenSnapshotWarmupFor(t *testing.T) {
 			wantZero: false,
 		},
 	}
+	// A non-default warmup, so the "keeps warmup" cases prove the configured
+	// value is what flows through rather than coincidentally matching the const.
+	const configured = 90 * time.Second
+	r := &ActorTemplateReconciler{GoldenSnapshotWarmup: configured}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			at := &atev1alpha1.ActorTemplate{
 				Spec: atev1alpha1.ActorTemplateSpec{Containers: tt.containers},
 			}
-			got := goldenSnapshotWarmupFor(at)
+			got := r.goldenSnapshotWarmupFor(at)
 			if tt.wantZero && got != 0 {
 				t.Errorf("goldenSnapshotWarmupFor = %v, want 0", got)
 			}
-			if !tt.wantZero && got != goldenSnapshotWarmup {
-				t.Errorf("goldenSnapshotWarmupFor = %v, want %v", got, goldenSnapshotWarmup)
+			if !tt.wantZero && got != configured {
+				t.Errorf("goldenSnapshotWarmupFor = %v, want %v", got, configured)
 			}
 		})
 	}

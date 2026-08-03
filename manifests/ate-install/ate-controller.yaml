@@ -91,6 +91,13 @@ spec:
         args:
         - --ateapi-ca-file=/run/servicedns-ca/trust-bundle.pem
         - --ateapi-client-cert=/run/podidentity.podcert.ate.dev/credential-bundle.pem
+        # Delay between resuming the golden actor and checkpointing it, for
+        # templates whose containers do not all declare a readyz probe. Raise it
+        # for workloads with a long, probe-less startup that would otherwise be
+        # snapshotted mid-initialization. Prefer adding readyz to the
+        # ActorTemplate over tuning this — templates with readyz on every
+        # container skip the wait entirely.
+        # - --golden-snapshot-warmup=2m
         env:
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://opentelemetry-collector.gke-managed-otel.svc.cluster.local:4317

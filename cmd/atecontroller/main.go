@@ -53,6 +53,9 @@ var (
 	ateapiTokenAuth  = pflag.Bool("ateapi-use-token-auth", false, "Authenticate to ateapi with the Bearer token from --ateapi-token-file instead of the client certificate from --ateapi-client-cert.")
 	ateapiTokenFile  = pflag.String("ateapi-token-file", "", "Projected SA token file used as Bearer credential. Required with --ateapi-use-token-auth, ignored otherwise.")
 	ateapiClientCert = pflag.String("ateapi-client-cert", "", "Credential bundle presented as the client certificate when dialing ateapi. Required unless --ateapi-use-token-auth is set, ignored otherwise.")
+
+	goldenSnapshotWarmup = pflag.Duration("golden-snapshot-warmup", controllers.DefaultGoldenSnapshotWarmup,
+		"How long to wait after the golden actor resumes before checkpointing it, for ActorTemplates that do not declare a readyz probe on every container. Raise it for workloads with a long, probe-less startup, which would otherwise be snapshotted mid-initialization into a golden every actor then restores from. Prefer adding readyz to the ActorTemplate: fully-probed templates skip the wait entirely. 0 checkpoints as soon as the golden actor resumes.")
 )
 
 func init() {
@@ -63,6 +66,14 @@ func init() {
 func main() {
 	pflag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	// A negative warmup would put TakeGoldenSnapshotAt in the past, checkpointing
+	// the golden actor on the very next reconcile. Fail at startup rather than
+	// silently producing dead goldens.
+	if *goldenSnapshotWarmup < 0 {
+		setupLog.Error(nil, "invalid flag", "--golden-snapshot-warmup", *goldenSnapshotWarmup, "reason", "must not be negative")
+		os.Exit(1)
+	}
 
 	dialOpts, err := ateapiauth.DialOptions(ateapiauth.ClientConfig{
 		UseTokenAuth:     *ateapiTokenAuth,
@@ -112,9 +123,10 @@ func main() {
 	}
 
 	if err = (&controllers.ActorTemplateReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		AteClient: ateapiClient,
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		AteClient:            ateapiClient,
+		GoldenSnapshotWarmup: *goldenSnapshotWarmup,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ActorTemplate")
 		os.Exit(1)

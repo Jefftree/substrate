@@ -35,13 +35,16 @@ import (
 const (
 	GoldenSnapshotCreationReason = "GoldenSnapshotCreation"
 
-	// goldenSnapshotWarmup is the default wall-clock delay between resuming
-	// the golden actor and taking its snapshot, used as a coarse "give the
-	// workload time to finish initializing" fallback for templates without
+	// DefaultGoldenSnapshotWarmup is the default wall-clock delay between
+	// resuming the golden actor and taking its snapshot, used as a coarse "give
+	// the workload time to finish initializing" fallback for templates without
 	// a readiness probe. Templates whose containers all declare readyz skip
 	// this wait — ResumeActor only returns once readyz reports 200, so the
 	// workload is already initialized by the time we get here.
-	goldenSnapshotWarmup = 20 * time.Second
+	//
+	// It is the default for --golden-snapshot-warmup; see
+	// ActorTemplateReconciler.GoldenSnapshotWarmup.
+	DefaultGoldenSnapshotWarmup = 20 * time.Second
 )
 
 type ActorTemplateReconciler struct {
@@ -49,6 +52,18 @@ type ActorTemplateReconciler struct {
 	Scheme *runtime.Scheme
 
 	AteClient ateapipb.ControlClient
+
+	// GoldenSnapshotWarmup is how long to wait after the golden actor resumes
+	// before checkpointing it, for templates that do not declare readyz on
+	// every container. A probe-less workload whose initialization outlasts this
+	// is checkpointed mid-startup, capturing a golden that every actor then
+	// restores from — so it needs raising for heavy runtimes.
+	//
+	// Zero is meaningful and is not treated as "unset": it means snapshot as
+	// soon as the golden actor resumes, which is what a fully-probed template
+	// already does. Zero here is safe because this is a delay, not a deadline.
+	// Negative values are rejected at startup.
+	GoldenSnapshotWarmup time.Duration
 }
 
 //+kubebuilder:rbac:groups=ate.dev,resources=actortemplates,verbs=get;list;watch;create;update;patch;delete
@@ -136,7 +151,7 @@ func (r *ActorTemplateReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		at.Status.Phase = atev1alpha1.PhaseWaitGoldenActor
-		at.Status.TakeGoldenSnapshotAt = metav1.NewTime(time.Now().Add(goldenSnapshotWarmupFor(at)))
+		at.Status.TakeGoldenSnapshotAt = metav1.NewTime(time.Now().Add(r.goldenSnapshotWarmupFor(at)))
 		if err := r.Status().Update(ctx, at); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -194,16 +209,16 @@ func (r *ActorTemplateReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // goldenSnapshotWarmupFor returns 0 when every container in the template has
 // a readyz probe (so ResumeActor already blocked until the workload reported
-// 200), and the default warmup otherwise. A template with no containers
-// keeps the default — there is nothing to gate on.
-func goldenSnapshotWarmupFor(at *atev1alpha1.ActorTemplate) time.Duration {
+// 200), and the configured warmup otherwise. A template with no containers
+// keeps the configured warmup — there is nothing to gate on.
+func (r *ActorTemplateReconciler) goldenSnapshotWarmupFor(at *atev1alpha1.ActorTemplate) time.Duration {
 	containers := at.Spec.Containers
 	if len(containers) == 0 {
-		return goldenSnapshotWarmup
+		return r.GoldenSnapshotWarmup
 	}
 	for i := range containers {
 		if containers[i].Readyz == nil {
-			return goldenSnapshotWarmup
+			return r.GoldenSnapshotWarmup
 		}
 	}
 	return 0
